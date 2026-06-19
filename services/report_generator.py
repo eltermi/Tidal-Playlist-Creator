@@ -17,6 +17,7 @@ def generate_report(
                 f"Playlist: {summary.playlist_name}",
                 f"Found: {summary.found}",
                 f"Added: {summary.added}",
+                f"Already Present: {summary.already_present}",
                 f"Skipped: {summary.skipped}",
                 f"Not Found: {summary.not_found}",
                 "",
@@ -26,6 +27,8 @@ def generate_report(
     for match in matches:
         if match.status == TrackStatus.ADDED:
             marker = "✓"
+        elif match.status == TrackStatus.ALREADY_PRESENT:
+            marker = "="
         elif match.selected is None or match.status in {
             TrackStatus.NOT_FOUND,
             TrackStatus.FAILED,

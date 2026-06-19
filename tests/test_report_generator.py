@@ -29,5 +29,6 @@ def test_generate_report_contains_summary_and_track_statuses():
         ),
     )
     assert "Playlist: Test" in report
+    assert "Already Present: 0" in report
     assert "✓ Artist – Song" in report
     assert "✗ Unknown Track" in report

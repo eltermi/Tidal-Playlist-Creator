@@ -7,6 +7,7 @@ from typing import Any
 
 class TrackStatus(str, Enum):
     FOUND = "found"
+    ALREADY_PRESENT = "already_present"
     SKIPPED = "skipped"
     NOT_FOUND = "not_found"
     ADDED = "added"
@@ -42,11 +43,37 @@ class TrackMatch:
 
 
 @dataclass(slots=True)
+class PlaylistInfo:
+    playlist_id: str
+    name: str
+    description: str = ""
+    track_count: int = 0
+    playlist_url: str = ""
+
+
+@dataclass(slots=True)
+class PlaylistTrack:
+    track_id: int
+    title: str
+    artist: str
+    album: str
+    duration_seconds: int = 0
+
+
+@dataclass(slots=True)
 class PlaylistSummary:
     found: int = 0
     added: int = 0
+    already_present: int = 0
     skipped: int = 0
     not_found: int = 0
     failed: int = 0
     playlist_name: str = ""
     playlist_url: str = ""
+    operation: str = "create"
+
+
+@dataclass(slots=True)
+class PlaylistOperationResult:
+    summary: PlaylistSummary
+    tracks: list[PlaylistTrack] = field(default_factory=list)

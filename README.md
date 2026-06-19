@@ -11,6 +11,9 @@ OAuth flow; it never stores a TIDAL password.
 - Simple confidence score with green, yellow, and red validation rows.
 - Uncheck incorrect results and choose from alternative matches.
 - Create a playlist and add the selected tracks.
+- Add tracks to an existing playlist created by the connected user.
+- Review and filter all current playlist tracks before and after updating it.
+- Detect exact duplicate tracks before modifying an existing playlist.
 - Export a UTF-8 text report.
 - Save the OAuth session in the user's local application-data directory.
 
@@ -53,6 +56,11 @@ directory. On macOS this is normally:
    any result row to select an alternative.
 6. Click **Create Playlist**.
 7. Optionally click **Save Report**.
+
+To update an existing playlist, select **Add to Existing Playlist**, choose one
+of your own playlists, review its current tracks and follow the same analysis
+and review flow. Exact duplicates are unchecked automatically. Enable
+**Allow duplicates** only when repeated tracks are intentional.
 
 ## Tests
 

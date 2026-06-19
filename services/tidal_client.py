@@ -7,7 +7,7 @@ from typing import Callable
 import tidalapi
 from requests import Session as RequestsSession
 
-from services.models import TrackCandidate
+from services.models import PlaylistInfo, PlaylistTrack, TrackCandidate
 
 LOGGER = logging.getLogger(__name__)
 
@@ -116,9 +116,105 @@ class TidalClient:
         except Exception as exc:
             raise TidalClientError(f"Could not create the playlist: {exc}") from exc
 
+    def list_user_playlists(self) -> list[PlaylistInfo]:
+        self._require_authentication()
+        if self.session.user is None:
+            raise AuthenticationRequired("No authenticated TIDAL user is available.")
+
+        try:
+            playlists = self.session.user.playlists()
+            result = []
+            for playlist in playlists:
+                creator = getattr(playlist, "creator", None)
+                if creator is None or creator.id != self.session.user.id:
+                    continue
+                if not isinstance(playlist, tidalapi.playlist.UserPlaylist):
+                    continue
+                result.append(self._to_playlist_info(playlist))
+            return sorted(result, key=lambda item: item.name.strip().casefold())
+        except Exception as exc:
+            raise TidalClientError(f"Could not load your playlists: {exc}") from exc
+
+    def get_playlist_tracks(self, playlist_id: str) -> list[PlaylistTrack]:
+        playlist = self._get_editable_playlist(playlist_id)
+        try:
+            return [
+                self._to_playlist_track(track)
+                for track in playlist.tracks_paginated()
+            ]
+        except Exception as exc:
+            raise TidalClientError(f"Could not load playlist tracks: {exc}") from exc
+
+    def add_tracks_to_playlist(
+        self,
+        playlist_id: str,
+        track_ids: list[int],
+        allow_duplicates: bool = False,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> tuple[int, int, int]:
+        playlist = self._get_editable_playlist(playlist_id)
+        existing_ids = {
+            int(track.id) for track in playlist.tracks_paginated()
+        }
+        requested_ids = list(dict.fromkeys(int(track_id) for track_id in track_ids))
+        if allow_duplicates:
+            pending_ids = [int(track_id) for track_id in track_ids]
+            already_present = 0
+        else:
+            pending_ids = [
+                track_id for track_id in requested_ids if track_id not in existing_ids
+            ]
+            already_present = len(requested_ids) - len(pending_ids)
+
+        added = 0
+        failed = 0
+        total = len(pending_ids)
+        for start in range(0, total, 100):
+            batch = pending_ids[start : start + 100]
+            try:
+                batch_added = len(
+                    playlist.add(batch, allow_duplicates=allow_duplicates, limit=100)
+                )
+            except Exception:
+                LOGGER.warning("Retrying playlist update after refreshing the playlist")
+                try:
+                    playlist = self._get_editable_playlist(playlist_id)
+                    batch_added = len(
+                        playlist.add(
+                            batch,
+                            allow_duplicates=allow_duplicates,
+                            limit=100,
+                        )
+                    )
+                except Exception:
+                    LOGGER.exception("Could not add a playlist batch after retry")
+                    batch_added = 0
+            added += batch_added
+            failed += len(batch) - batch_added
+            if progress:
+                progress(min(start + len(batch), total), total)
+        return added, already_present, failed
+
     def _require_authentication(self) -> None:
         if not self.is_authenticated:
             raise AuthenticationRequired("TIDAL authentication is required.")
+
+    def _get_editable_playlist(self, playlist_id: str):
+        self._require_authentication()
+        if self.session.user is None:
+            raise AuthenticationRequired("No authenticated TIDAL user is available.")
+        try:
+            playlist = self.session.playlist(playlist_id)
+        except Exception as exc:
+            raise TidalClientError(f"Could not load the selected playlist: {exc}") from exc
+        creator = getattr(playlist, "creator", None)
+        if (
+            not isinstance(playlist, tidalapi.playlist.UserPlaylist)
+            or creator is None
+            or creator.id != self.session.user.id
+        ):
+            raise TidalClientError("The selected playlist is not editable by this user.")
+        return playlist
 
     def _new_session(self) -> tidalapi.Session:
         session = tidalapi.Session()
@@ -148,4 +244,30 @@ class TidalClient:
             artist=artist,
             album=album,
             raw_track=track,
+        )
+
+    @staticmethod
+    def _to_playlist_info(playlist) -> PlaylistInfo:
+        return PlaylistInfo(
+            playlist_id=str(playlist.id),
+            name=playlist.name or "Untitled Playlist",
+            description=playlist.description or "",
+            track_count=max(0, int(playlist.num_tracks)),
+            playlist_url=playlist.share_url or playlist.listen_url or "",
+        )
+
+    @staticmethod
+    def _to_playlist_track(track) -> PlaylistTrack:
+        artist = getattr(getattr(track, "artist", None), "name", "") or ""
+        if not artist:
+            artists = getattr(track, "artists", None) or []
+            artist = ", ".join(
+                item.name for item in artists if getattr(item, "name", None)
+            )
+        return PlaylistTrack(
+            track_id=int(track.id),
+            title=track.name or "",
+            artist=artist,
+            album=getattr(getattr(track, "album", None), "name", "") or "",
+            duration_seconds=int(getattr(track, "duration", 0) or 0),
         )
