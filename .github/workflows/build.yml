@@ -100,19 +100,143 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Create GitHub Release
+  build-windows:
+    name: Build Windows (x64)
+    runs-on: windows-2025
+    timeout-minutes: 30
+
+    env:
+      APP_NAME: Tidal Playlist Creator
+      PACKAGE_NAME: Tidal-Playlist-Creator
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run tests
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+
+      - name: Determine package version
+        id: package
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+              if ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+$') {
+                  throw "Tag must match vMAJOR.MINOR.PATCH, for example v1.0.0."
+              }
+              $PackageVersion = $env:GITHUB_REF_NAME
+          } else {
+              $PackageVersion = (git rev-parse --short=7 HEAD).Trim()
+          }
+
+          $ArchiveName = "$env:PACKAGE_NAME-$PackageVersion-Windows.zip"
+          $ArtifactName = "$env:PACKAGE_NAME-$PackageVersion-Windows"
+          "PACKAGE_VERSION=$PackageVersion" >> $env:GITHUB_ENV
+          "ARCHIVE_NAME=$ArchiveName" >> $env:GITHUB_ENV
+          "archive_name=$ArchiveName" >> $env:GITHUB_OUTPUT
+          "artifact_name=$ArtifactName" >> $env:GITHUB_OUTPUT
+
+      - name: Build application
+        shell: pwsh
+        run: .\build_windows.ps1
+
+      - name: Verify Windows executable
+        shell: pwsh
+        run: |
+          $Executable = "dist\$env:APP_NAME.exe"
+          if (-not (Test-Path $Executable -PathType Leaf)) {
+              throw "Missing executable: $Executable"
+          }
+
+          $Bytes = [System.IO.File]::ReadAllBytes($Executable)
+          if ($Bytes.Length -lt 64 -or $Bytes[0] -ne 0x4D -or $Bytes[1] -ne 0x5A) {
+              throw "The generated file is not a valid Windows PE executable."
+          }
+
+          $PeOffset = [BitConverter]::ToInt32($Bytes, 0x3C)
+          $Machine = [BitConverter]::ToUInt16($Bytes, $PeOffset + 4)
+          if ($Machine -ne 0x8664) {
+              throw ("Expected x64 executable, PE machine value was 0x{0:X4}." -f $Machine)
+          }
+
+      - name: Package application
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          $Archive = "release\$env:ARCHIVE_NAME"
+          Compress-Archive -Path "dist\$env:APP_NAME.exe" -DestinationPath $Archive
+          if (-not (Test-Path $Archive -PathType Leaf)) {
+              throw "Package was not generated: $Archive"
+          }
+          if ((Get-Item $Archive).Length -eq 0) {
+              throw "Generated package is empty: $Archive"
+          }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: release/${{ steps.package.outputs.archive_name }}
+          if-no-files-found: error
+          retention-days: 14
+
+  create-release:
+    name: Create GitHub Release
+    if: github.ref_type == 'tag'
+    needs:
+      - build-macos
+      - build-windows
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download release packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: Tidal-Playlist-Creator-${{ github.ref_name }}-*
+          path: release
+          merge-multiple: true
+
+      - name: Verify release packages
+        shell: bash
+        run: |
+          test -s "release/Tidal-Playlist-Creator-${GITHUB_REF_NAME}-macOS.zip"
+          test -s "release/Tidal-Playlist-Creator-${GITHUB_REF_NAME}-Windows.zip"
+
+      - name: Publish GitHub Release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          APP_NAME: Tidal Playlist Creator
         shell: bash
         run: |
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" \
-              "release/${ARCHIVE_NAME}" \
+              release/*.zip \
               --clobber
           else
             gh release create "${GITHUB_REF_NAME}" \
-              "release/${ARCHIVE_NAME}" \
+              release/*.zip \
               --verify-tag \
               --generate-notes \
               --title "${APP_NAME} ${GITHUB_REF_NAME}"
