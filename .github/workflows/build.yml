@@ -1,0 +1,119 @@
+name: Build and release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS (Apple Silicon)
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    env:
+      APP_NAME: Tidal Playlist Creator
+      PACKAGE_NAME: Tidal-Playlist-Creator
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+
+      - name: Determine package version
+        id: package
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Tag must match vMAJOR.MINOR.PATCH, for example v1.0.0."
+              exit 1
+            fi
+            PACKAGE_VERSION="${GITHUB_REF_NAME}"
+          else
+            PACKAGE_VERSION="$(git rev-parse --short=7 HEAD)"
+          fi
+
+          ARCHIVE_NAME="${PACKAGE_NAME}-${PACKAGE_VERSION}-macOS.zip"
+          ARTIFACT_NAME="${PACKAGE_NAME}-${PACKAGE_VERSION}-macOS"
+          echo "PACKAGE_VERSION=${PACKAGE_VERSION}" >> "${GITHUB_ENV}"
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "${GITHUB_ENV}"
+          echo "archive_name=${ARCHIVE_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "artifact_name=${ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build application
+        run: PYTHON_BIN=python ./build_mac.sh
+
+      - name: Verify application bundle
+        shell: bash
+        run: |
+          APP_PATH="dist/${APP_NAME}.app"
+          EXECUTABLE="${APP_PATH}/Contents/MacOS/${APP_NAME}"
+
+          test -d "${APP_PATH}"
+          test -x "${EXECUTABLE}"
+          test -f "${APP_PATH}/Contents/Info.plist"
+          test -f "${APP_PATH}/Contents/Resources/app.icns"
+          file "${EXECUTABLE}" | grep -q "Mach-O 64-bit executable arm64"
+          codesign --verify --deep --strict "${APP_PATH}"
+
+      - name: Package application
+        shell: bash
+        run: |
+          mkdir -p release
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/${APP_NAME}.app" \
+            "release/${ARCHIVE_NAME}"
+          test -s "release/${ARCHIVE_NAME}"
+          unzip -t "release/${ARCHIVE_NAME}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: release/${{ steps.package.outputs.archive_name }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" \
+              "release/${ARCHIVE_NAME}" \
+              --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              "release/${ARCHIVE_NAME}" \
+              --verify-tag \
+              --generate-notes \
+              --title "${APP_NAME} ${GITHUB_REF_NAME}"
+          fi

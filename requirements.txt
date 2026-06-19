@@ -1,0 +1,3 @@
+PySide6>=6.8,<7
+tidalapi>=0.8.11,<0.9
+PyInstaller>=6.10,<7
